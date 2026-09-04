@@ -9,6 +9,8 @@
      fly   – the same gopher riding a cloud; entered with a double jump,
              hold Space to rise, Shift to sink, touch the ground to land
 
+   The scenery (sky, meadow, clouds, banner) lives in world.js.
+
    Sections: config · helpers · boot · world · effects · characters · input ·
              movement & collision · procedural animation · main loop
    ============================================================================= */
@@ -63,24 +65,25 @@
     'Scarf', 'ScarfTailUpper', 'ScarfTailLower', 'Cloud',
   ];
 
-  /** Deterministic obstacle layout: centre x/z + size w/h/d. Origin stays clear. */
+  /** Deterministic obstacle layout: centre x/z + size w/h/d + look. Origin stays
+   *  clear. world.js draws them; collision uses the box regardless of kind. */
   const OBSTACLES = [
-    // cubes
-    { x:   6, z:   5, w: 1.5, h: 1.5, d: 1.5 },
-    { x:  -7, z:   6, w: 1.0, h: 1.0, d: 1.0 },
-    { x:   8, z:  -6, w: 2.0, h: 2.0, d: 2.0 },
-    { x:  -5, z:  -8, w: 1.2, h: 1.2, d: 1.2 },
-    { x:  12, z:  11, w: 1.8, h: 1.8, d: 1.8 },
-    { x: -13, z:  -4, w: 1.0, h: 1.0, d: 1.0 },
-    { x:   3, z: -13, w: 1.4, h: 1.4, d: 1.4 },
-    { x: -10, z:  13, w: 2.0, h: 2.0, d: 2.0 },
-    // low walls (hoppable: jump apex is 1 unit)
-    { x:   0, z:  10, w: 6.0, h: 0.8, d: 0.6 },
-    { x: -12, z:   0, w: 0.6, h: 0.8, d: 6.0 },
-    { x:  13, z:  -2, w: 0.6, h: 1.0, d: 5.0 },
-    { x:   4, z:  -4, w: 4.0, h: 0.6, d: 0.6 },
-    // something tall to fly over
-    { x:  -3, z: -15, w: 2.0, h: 3.5, d: 2.0 },
+    // boulders
+    { kind: 'rock', x:   6, z:   5, w: 1.5, h: 1.5, d: 1.5 },
+    { kind: 'rock', x:  -7, z:   6, w: 1.0, h: 1.0, d: 1.0 },
+    { kind: 'rock', x:   8, z:  -6, w: 2.0, h: 2.0, d: 2.0 },
+    { kind: 'rock', x:  -5, z:  -8, w: 1.2, h: 1.2, d: 1.2 },
+    { kind: 'rock', x:  12, z:  11, w: 1.8, h: 1.8, d: 1.8 },
+    { kind: 'rock', x: -13, z:  -4, w: 1.0, h: 1.0, d: 1.0 },
+    { kind: 'rock', x:   3, z: -13, w: 1.4, h: 1.4, d: 1.4 },
+    { kind: 'rock', x: -10, z:  13, w: 2.0, h: 2.0, d: 2.0 },
+    // hedges (hoppable: jump apex is 1 unit)
+    { kind: 'hedge', x:   0, z:  10, w: 6.0, h: 0.8, d: 0.6 },
+    { kind: 'hedge', x: -12, z:   0, w: 0.6, h: 0.8, d: 6.0 },
+    { kind: 'hedge', x:  13, z:  -2, w: 0.6, h: 1.0, d: 5.0 },
+    { kind: 'hedge', x:   4, z:  -4, w: 4.0, h: 0.6, d: 0.6 },
+    // a big tree to fly over (collision box is its trunk)
+    { kind: 'tree', x:  -3, z: -15, w: 1.0, h: 4.5, d: 1.0 },
   ];
 
   // ---------------------------------------------------------------------------
@@ -146,13 +149,6 @@
   const engine = new BABYLON.Engine(canvas, true, { stencil: false });
   const scene = new BABYLON.Scene(engine);
 
-  const skyColor = new BABYLON.Color3(0.13, 0.15, 0.19);
-  scene.clearColor = new BABYLON.Color4(skyColor.r, skyColor.g, skyColor.b, 1);
-  scene.fogMode = BABYLON.Scene.FOGMODE_LINEAR;
-  scene.fogColor = skyColor;
-  scene.fogStart = 22;
-  scene.fogEnd = 58;
-
   // ---- Camera: orbit around a point just above the gopher -------------------
   const cameraTarget = new BABYLON.TransformNode('cameraTarget', scene);
   cameraTarget.position.set(0, CAMERA_TARGET_HEIGHT, 0);
@@ -173,102 +169,34 @@
 
   // ---- Lights & shadows -----------------------------------------------------
   const hemi = new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0, 1, 0), scene);
-  hemi.intensity = 0.45;
-  hemi.groundColor = new BABYLON.Color3(0.25, 0.25, 0.3);
+  hemi.intensity = 0.6;
+  hemi.diffuse = new BABYLON.Color3(0.78, 0.86, 1.0);
+  hemi.groundColor = new BABYLON.Color3(0.30, 0.38, 0.26);
 
   const sunDir = new BABYLON.Vector3(-1, -2, -1).normalize();
   const sun = new BABYLON.DirectionalLight('sun', sunDir, scene);
   sun.position = sunDir.scale(-40);
-  sun.intensity = 1.0;
+  sun.intensity = 1.15;
+  sun.diffuse = new BABYLON.Color3(1.0, 0.96, 0.88);
   sun.autoCalcShadowZBounds = true;
 
-  const shadowGenerator = new BABYLON.ShadowGenerator(1024, sun);
+  const shadowGenerator = new BABYLON.ShadowGenerator(2048, sun);
   shadowGenerator.usePercentageCloserFiltering = true;
   shadowGenerator.filteringQuality = BABYLON.ShadowGenerator.QUALITY_MEDIUM;
   shadowGenerator.bias = 0.003;
   shadowGenerator.normalBias = 0.03; // stops acne on faces lit at a grazing angle
 
   // ---------------------------------------------------------------------------
-  // World: grid ground + box obstacles
+  // World: sky, meadow, obstacles, clouds and the banner (see world.js)
   // ---------------------------------------------------------------------------
 
-  /** Grid drawn on a 2D canvas: 5×5 cells per tile, heavier line on the tile
-   *  edge → one heavy line every 5 cells once tiled across the ground. */
-  function createGridMaterial() {
-    const CELL_PX = 64;
-    const CELLS_PER_TILE = 5;
-    const size = CELL_PX * CELLS_PER_TILE;
+  const world = window.GopherWorld.create(scene, shadowGenerator, {
+    playHalf: WORLD_HALF,
+    obstacles: OBSTACLES,
+  });
 
-    const tex = new BABYLON.DynamicTexture(
-      'gridTexture', { width: size, height: size }, scene, true, BABYLON.Texture.TRILINEAR_SAMPLINGMODE
-    );
-    const ctx = tex.getContext();
-    ctx.fillStyle = '#d7dbe0';
-    ctx.fillRect(0, 0, size, size);
-
-    ctx.fillStyle = '#b6bdc6';
-    for (let i = 1; i < CELLS_PER_TILE; i++) {
-      const p = i * CELL_PX;
-      ctx.fillRect(p - 1, 0, 2, size);
-      ctx.fillRect(0, p - 1, size, 2);
-    }
-    ctx.fillStyle = '#8b949f';
-    ctx.fillRect(0, 0, 2, size);
-    ctx.fillRect(size - 2, 0, 2, size);
-    ctx.fillRect(0, 0, size, 2);
-    ctx.fillRect(0, size - 2, size, 2);
-    tex.update();
-
-    // Dynamic textures default to clamping; the grid must tile across the ground.
-    tex.wrapU = BABYLON.Texture.WRAP_ADDRESSMODE;
-    tex.wrapV = BABYLON.Texture.WRAP_ADDRESSMODE;
-    tex.uScale = GROUND_SIZE / CELLS_PER_TILE; // one cell = one world unit
-    tex.vScale = GROUND_SIZE / CELLS_PER_TILE;
-    tex.anisotropicFilteringLevel = 8;
-
-    const mat = new BABYLON.StandardMaterial('gridMaterial', scene);
-    mat.diffuseTexture = tex;
-    mat.specularColor = new BABYLON.Color3(0.03, 0.03, 0.03);
-    return mat;
-  }
-
-  const ground = BABYLON.MeshBuilder.CreateGround(
-    'ground', { width: GROUND_SIZE, height: GROUND_SIZE, subdivisions: 1 }, scene
-  );
-  ground.material = createGridMaterial();
-  ground.receiveShadows = true;
-
-  /** AABBs on the XZ plane for collision, with the box top height. */
-  const obstacleBounds = [];
-
-  function createObstacles() {
-    const palette = [
-      new BABYLON.Color3(0.86, 0.87, 0.89),
-      new BABYLON.Color3(0.72, 0.74, 0.77),
-      new BABYLON.Color3(0.93, 0.93, 0.94),
-    ];
-    OBSTACLES.forEach((o, i) => {
-      const box = BABYLON.MeshBuilder.CreateBox(
-        'obstacle' + i, { width: o.w, height: o.h, depth: o.d }, scene
-      );
-      box.position.set(o.x, o.h / 2, o.z);
-
-      const mat = new BABYLON.StandardMaterial('obstacleMat' + i, scene);
-      mat.diffuseColor = palette[i % palette.length];
-      mat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
-      box.material = mat;
-
-      box.receiveShadows = true;
-      shadowGenerator.addShadowCaster(box);
-
-      obstacleBounds.push({
-        minX: o.x - o.w / 2, maxX: o.x + o.w / 2,
-        minZ: o.z - o.d / 2, maxZ: o.z + o.d / 2,
-        top: o.h,
-      });
-    });
-  }
-  createObstacles();
+  /** AABBs on the XZ plane for collision, with the top height (fly over). */
+  const obstacleBounds = world.obstacleBounds;
 
   // ---------------------------------------------------------------------------
   // Effects: a white "poof" for the transformation
@@ -694,6 +622,7 @@
     poof.burst(gopher.position, new BABYLON.Vector3(state.vx, state.vy * 0.5, state.vz));
     triggerSquash();
     setModeBadge('on a cloud', true);
+    cameraEaseUntil = time + 2.5;
     setStatus('hold Space to rise · Shift to sink · touch the ground to land');
   }
 
@@ -708,6 +637,7 @@
     triggerSquash();
     setModeBadge('on foot', false);
     setStatus('');
+    cameraEaseUntil = time + 2.0;
   }
 
   // ---- Per-mode updates -----------------------------------------------------
@@ -770,11 +700,27 @@
     if (pos.y <= 0) land();
   }
 
+  /** For a couple of seconds after a transformation the camera eases to a
+   *  framing that suits the new mode (more level and further back in the air),
+   *  unless the player is dragging it. Otherwise it is left alone. */
+  let cameraEaseUntil = 0;
+  let pointerDown = false;
+  scene.onPointerObservable.add((info) => {
+    if (info.type === BABYLON.PointerEventTypes.POINTERDOWN) pointerDown = true;
+    else if (info.type === BABYLON.PointerEventTypes.POINTERUP) pointerDown = false;
+  });
+
   function updateCamera(dt) {
     const p = gopher.position;
     cameraTarget.position.x = p.x;
     cameraTarget.position.z = p.z;
     cameraTarget.position.y = damp(cameraTarget.position.y, p.y + CAMERA_TARGET_HEIGHT, 8, dt);
+
+    if (time < cameraEaseUntil && !pointerDown) {
+      const flying = state.mode === 'fly';
+      camera.beta = damp(camera.beta, flying ? 1.42 : 1.1, 2.5, dt);
+      camera.radius = damp(camera.radius, flying ? 8 : 6, 2.5, dt);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -945,6 +891,7 @@
     updateCamera(dt);
     animateGopher(time, dt);
     poof.update(dt);
+    world.update(time, dt);
   });
 
   engine.runRenderLoop(() => scene.render());
@@ -964,6 +911,7 @@
     })
     .then(() => {
       setModeBadge('on foot', false);
+      setStatus('psst… something is floating up in the clouds. Jump, then jump again!');
       hideLoading();
     });
 })();

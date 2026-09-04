@@ -1,8 +1,9 @@
 # Gopher Run
 
-A cute gopher that runs around a bare-bones grid world, and rides a cloud when
-it double jumps. The gophers are modelled procedurally in Blender and the game
-is plain HTML/CSS/JS on top of Babylon.js.
+A cute gopher that runs around a meadow, and rides a cloud when it double
+jumps. Up in the clouds hangs a giant banner with a farewell message. The
+gophers are modelled procedurally in Blender and the game is plain
+HTML/CSS/JS on top of Babylon.js.
 
 ![gopher](assets/gopher-preview-front34.png)
 
@@ -26,6 +27,19 @@ The game plays as the scarf gopher (`gopher-scarf.glb`) and switches to the
 cloud-riding model (`gopher-scarf-cloud.glb`) in flight. If either is missing
 it falls back to the classic brown gopher, a placeholder, or a procedurally
 built cloud, so the page never ends up blank.
+
+## The world and the banner
+
+`web/world.js` builds the scenery: a gradient sky with a sun, a grassy meadow
+with trees, bushes, boulders, hedges, flowers and grass tufts, drifting clouds
+at flying altitude, a few butterflies, and the banner. Everything is procedural
+and laid out with a seeded random generator, so it looks the same every visit.
+Static scenery is merged into a handful of meshes to keep draw calls low.
+
+The banner text lives at the top of `world.js` in `BANNER_LINES`; the "<3" is
+drawn as a red heart after the second line. `BANNER` sets where it floats
+(8 units up, 10 units ahead of the spawn) and how big it is. It is readable
+from both sides and ripples gently.
 
 ## Rebuild the model
 
@@ -79,7 +93,8 @@ assets/*.glb          The models (Y-up glTF, face +Z, bottom on y=0, about 1 uni
 assets/*.png          Eevee preview renders from four angles
 web/index.html        Page shell and HUD
 web/style.css         Minimal styling
-web/game.js           World, controls, camera, collision, walk/fly modes, animation
+web/world.js          Sky, meadow, trees, clouds, butterflies and the banner
+web/game.js           Controls, camera, collision, walk/fly modes, character animation
 web/gopher-model.js   Generated: window.GOPHER_MODELS = { name: base64 }
 ```
 
