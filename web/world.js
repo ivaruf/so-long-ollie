@@ -575,9 +575,6 @@
       ctx.fillText(BANNER_LINES[1], startX, 318);
       drawHeart(ctx, startX + textW + gap + heart / 2, 318 + size2 * 0.06, heart, '#e4607a');
 
-      // Little hearts in the corners.
-      [[110, 110], [W - 110, 110], [110, H - 110], [W - 110, H - 110]].forEach(([x, y]) => drawHeart(ctx, x, y, 34, '#f2a2b4'));
-
       tex.update();
       return tex;
     }
