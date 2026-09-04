@@ -127,6 +127,8 @@
     loading: document.getElementById('loading'),
     status: document.getElementById('status'),
     mode: document.getElementById('mode'),
+    hud: document.getElementById('hud'),
+    btnB: document.querySelector('#touch .tbtn-b span'),
   };
   const hideLoading = () => { if (ui.loading) ui.loading.hidden = true; };
   const setStatus = (text) => {
@@ -138,7 +140,12 @@
     if (!ui.mode) return;
     ui.mode.textContent = text;
     ui.mode.classList.toggle('flying', flying);
+    if (ui.btnB) ui.btnB.textContent = flying ? '\u25BC' : '\u00BB'; // sink / sprint
   };
+
+  /** Touch device? Coarse pointer, or touch points on a phone/tablet-sized screen. */
+  const IS_TOUCH = (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) ||
+    ((navigator.maxTouchPoints > 0 || 'ontouchstart' in window) && Math.min(window.innerWidth, window.innerHeight) < 900);
 
   const canvas = document.getElementById('renderCanvas');
   if (typeof BABYLON === 'undefined') {
@@ -180,9 +187,9 @@
   sun.diffuse = new BABYLON.Color3(1.0, 0.96, 0.88);
   sun.autoCalcShadowZBounds = true;
 
-  const shadowGenerator = new BABYLON.ShadowGenerator(2048, sun);
+  const shadowGenerator = new BABYLON.ShadowGenerator(IS_TOUCH ? 1024 : 2048, sun);
   shadowGenerator.usePercentageCloserFiltering = true;
-  shadowGenerator.filteringQuality = BABYLON.ShadowGenerator.QUALITY_MEDIUM;
+  shadowGenerator.filteringQuality = IS_TOUCH ? BABYLON.ShadowGenerator.QUALITY_LOW : BABYLON.ShadowGenerator.QUALITY_MEDIUM;
   shadowGenerator.bias = 0.003;
   shadowGenerator.normalBias = 0.03; // stops acne on faces lit at a grazing angle
 
@@ -485,16 +492,116 @@
   const input = { keys: new Set(), jumpRequested: false };
   const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space']);
 
+  function pressKey(code) {
+    if (input.keys.has(code)) return;
+    input.keys.add(code);
+    if (code === 'Space') input.jumpRequested = true;
+  }
+  const releaseKey = (code) => input.keys.delete(code);
+
   window.addEventListener('keydown', (e) => {
     if (SCROLL_KEYS.has(e.code)) e.preventDefault(); // keep the page from scrolling
     if (e.repeat) return;
-    input.keys.add(e.code);
-    if (e.code === 'Space') input.jumpRequested = true;
+    pressKey(e.code);
   });
-  window.addEventListener('keyup', (e) => input.keys.delete(e.code));
+  window.addEventListener('keyup', (e) => releaseKey(e.code));
   window.addEventListener('blur', () => input.keys.clear());
 
   const isDown = (code) => input.keys.has(code);
+
+  // ---------------------------------------------------------------------------
+  // Touch controls: a floating stick on the left half, two buttons on the right.
+  // Space (jump / rise) and Shift (sprint / sink) are the same as on a keyboard.
+  // The info box is hidden on touch devices: figuring it out is part of the fun.
+  // ---------------------------------------------------------------------------
+
+  const touch = { active: false, x: 0, y: 0 }; // x: right, y: forward, each -1..1
+
+  function setupTouchControls() {
+    const root = document.getElementById('touch');
+    if (!IS_TOUCH || !root) return;
+    root.hidden = false;
+    if (ui.hud) ui.hud.hidden = true;
+
+    const zone = root.querySelector('.stick-zone');
+    const base = root.querySelector('.stick-base');
+    const knob = root.querySelector('.stick-knob');
+    const RADIUS = 42;     // knob travel in px
+    const DEAD = 0.12;
+    let pointerId = null;
+    let centre = { x: 0, y: 0 };
+
+    const home = () => {
+      const r = zone.getBoundingClientRect();
+      return { x: r.left + 96, y: r.bottom - 96 };
+    };
+    // Client coords → zone-relative (the zone starts part-way down the screen).
+    const placeBase = (x, y) => {
+      const r = zone.getBoundingClientRect();
+      base.style.left = (x - r.left) + 'px';
+      base.style.top = (y - r.top) + 'px';
+    };
+    const setKnob = (dx, dy) => { knob.style.transform = `translate(${dx}px, ${dy}px)`; };
+    const rest = () => { const h = home(); placeBase(h.x, h.y); setKnob(0, 0); };
+    rest();
+
+    zone.addEventListener('pointerdown', (e) => {
+      if (pointerId !== null) return;
+      e.preventDefault();
+      pointerId = e.pointerId;
+      try { zone.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ }
+      centre = { x: e.clientX, y: e.clientY };
+      placeBase(centre.x, centre.y);
+      setKnob(0, 0);
+      base.classList.add('live');
+      touch.active = true;
+      touch.x = 0;
+      touch.y = 0;
+    });
+    zone.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== pointerId) return;
+      let dx = e.clientX - centre.x;
+      let dy = e.clientY - centre.y;
+      const d = Math.hypot(dx, dy);
+      if (d > RADIUS) { dx *= RADIUS / d; dy *= RADIUS / d; }
+      setKnob(dx, dy);
+      const nx = dx / RADIUS, ny = dy / RADIUS;
+      const mag = Math.hypot(nx, ny);
+      if (mag < DEAD) { touch.x = 0; touch.y = 0; return; }
+      const k = ((mag - DEAD) / (1 - DEAD)) / mag; // rescale past the dead zone
+      touch.x = nx * k;
+      touch.y = -ny * k;                            // screen up = forward
+    });
+    const release = (e) => {
+      if (e.pointerId !== pointerId) return;
+      pointerId = null;
+      touch.active = false;
+      touch.x = 0;
+      touch.y = 0;
+      base.classList.remove('live');
+      rest();
+    };
+    zone.addEventListener('pointerup', release);
+    zone.addEventListener('pointercancel', release);
+    window.addEventListener('resize', () => { if (!touch.active) rest(); });
+
+    const bindButton = (el, code) => {
+      if (!el) return;
+      const down = (e) => {
+        e.preventDefault();
+        try { el.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ }
+        el.classList.add('active');
+        pressKey(code);
+      };
+      const up = () => { el.classList.remove('active'); releaseKey(code); };
+      el.addEventListener('pointerdown', down);
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    };
+    bindButton(root.querySelector('.tbtn-a'), 'Space');
+    bindButton(root.querySelector('.tbtn-b'), 'ShiftLeft');
+  }
+  setupTouchControls();
 
   // ---------------------------------------------------------------------------
   // Movement & collision
@@ -531,17 +638,19 @@
 
   /** WASD/arrows → target horizontal velocity relative to the camera yaw. */
   function steerHorizontal(dt, maxSpeed, accel, decel) {
-    const ix = (isDown('KeyD') || isDown('ArrowRight') ? 1 : 0) - (isDown('KeyA') || isDown('ArrowLeft') ? 1 : 0);
-    const iz = (isDown('KeyW') || isDown('ArrowUp') ? 1 : 0) - (isDown('KeyS') || isDown('ArrowDown') ? 1 : 0);
+    let ix = (isDown('KeyD') || isDown('ArrowRight') ? 1 : 0) - (isDown('KeyA') || isDown('ArrowLeft') ? 1 : 0);
+    let iz = (isDown('KeyW') || isDown('ArrowUp') ? 1 : 0) - (isDown('KeyS') || isDown('ArrowDown') ? 1 : 0);
+    if (touch.active) { ix = touch.x; iz = touch.y; } // analog stick overrides keys
 
     const fwd = cameraForwardXZ();
     const dirX = fwd.x * iz + fwd.z * ix;  // right = (fwd.z, -fwd.x)
     const dirZ = fwd.z * iz - fwd.x * ix;
     const len = Math.hypot(dirX, dirZ);
     const hasInput = len > 1e-6;
+    const strength = Math.min(1, len);      // partial stick deflection = slower
 
-    const tx = hasInput ? (dirX / len) * maxSpeed : 0;
-    const tz = hasInput ? (dirZ / len) * maxSpeed : 0;
+    const tx = hasInput ? (dirX / len) * maxSpeed * strength : 0;
+    const tz = hasInput ? (dirZ / len) * maxSpeed * strength : 0;
     accelerateToward(tx, tz, (hasInput ? accel : decel) * dt);
 
     const pos = gopher.position;

@@ -19,6 +19,12 @@ models are inlined into `web/gopher-model.js`, and Babylon.js loads from its CDN
 | Shift | Sprint | Hold to sink |
 | Mouse drag / wheel | Orbit / zoom the camera | Same |
 
+On a phone or tablet the info box is hidden and touch controls appear instead:
+a floating joystick anywhere on the left half of the screen, and two glass
+buttons bottom-right. The upper one is Space (jump, jump again, rise), the
+lower one is Shift (sprint on foot, sink on the cloud). Drag elsewhere to
+orbit the camera and pinch to zoom.
+
 Touching the ground while on the cloud turns you back into the walking gopher.
 Obstacles only block you while you are below their top, so low walls can be
 hopped and everything can be flown over.

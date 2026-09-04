@@ -6,6 +6,10 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
   background: #1e232b;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   color: rgba(255, 255, 255, 0.85);
@@ -13,8 +17,10 @@ html, body {
 
 #renderCanvas {
   display: block;
-  width: 100vw;
-  height: 100vh;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   outline: none;
   touch-action: none;
 }
@@ -111,4 +117,92 @@ html, body {
 #hud em {
   font-style: normal;
   color: #ffcf7a;
+}
+
+/* ---- Touch controls: glassy, mostly transparent ---- */
+#touch {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+#touch[hidden] {
+  display: none;
+}
+
+.stick-zone {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 50%;
+  height: 65%;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.stick-base {
+  position: absolute;
+  width: 112px;
+  height: 112px;
+  margin: -56px 0 0 -56px;      /* centre on left/top */
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.10);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  transition: opacity 0.2s;
+  opacity: 0.7;
+}
+
+.stick-base.live {
+  opacity: 1;
+}
+
+.stick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52px;
+  height: 52px;
+  margin: -26px 0 0 -26px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.45);
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  will-change: transform;
+}
+
+.tbtn {
+  position: absolute;
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  touch-action: none;
+  background: rgba(255, 255, 255, 0.12);
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 26px;
+  line-height: 1;
+}
+
+.tbtn span {
+  transform: translateY(-1px);
+}
+
+.tbtn.active {
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.tbtn-a {
+  right: calc(26px + env(safe-area-inset-right));
+  bottom: calc(112px + env(safe-area-inset-bottom));
+}
+
+.tbtn-b {
+  right: calc(112px + env(safe-area-inset-right));
+  bottom: calc(30px + env(safe-area-inset-bottom));
 }

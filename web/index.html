@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
   <title>Gopher Run</title>
   <meta name="description" content="A little gopher, a meadow, a cloud to ride, and a message up in the sky.">
   <meta name="theme-color" content="#62a24a">
@@ -27,6 +27,15 @@
   </div>
 
   <div id="loading">Loading&hellip;</div>
+
+  <!-- Touch controls (shown on touch devices only): floating stick + two buttons -->
+  <div id="touch" hidden aria-hidden="true">
+    <div class="stick-zone">
+      <div class="stick-base"><div class="stick-knob"></div></div>
+    </div>
+    <div class="tbtn tbtn-b"><span>&raquo;</span></div>
+    <div class="tbtn tbtn-a"><span>&#9650;</span></div>
+  </div>
 
   <!-- Pinned so the page keeps working as Babylon.js moves on. -->
   <script src="https://cdn.jsdelivr.net/npm/babylonjs@9.25.0/babylon.js"></script>
