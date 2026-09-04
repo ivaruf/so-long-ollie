@@ -422,7 +422,8 @@ for side, suffix in ((-1, "L"), (1, "R")):
     arm.rotation_euler.x = -0.64
 
 for side, suffix in ((-1, "L"), (1, "R")):
-    hip = V(side * 0.13, 0, 0.18 + RIDER_LIFT)
+    # 0.192 - 0.145 - 0.047 = 0, so the grounded feet land exactly on Z=0.
+    hip = V(side * 0.13, 0, 0.192 + RIDER_LIFT)
     leg = sphere(
         "Leg" + suffix,
         hip + V(0, 0, -0.075),

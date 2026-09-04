@@ -530,7 +530,8 @@ def build(variant, output):
         )
 
     for side, suffix in ((-1, "L"), (1, "R")):
-        hip = v(side * 0.13, 0, 0.18 + lift)
+        # Matches the Blender source: the grounded foot's lower surface is Y=0.
+        hip = v(side * 0.13, 0, 0.192 + lift)
         leg_center = add(hip, v(0, 0, -0.075))
         leg = builder.add_node(
             "Leg" + suffix,

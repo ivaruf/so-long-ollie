@@ -16,13 +16,15 @@
   <script>
     (async () => {
       const variant = new URLSearchParams(location.search).get('variant') === 'cloud' ? 'cloud' : 'plain';
+      const view = new URLSearchParams(location.search).get('view') || 'front34';
       const canvas = document.getElementById('canvas');
       const engine = new BABYLON.Engine(canvas, true, {preserveDrawingBuffer:true});
       const scene = new BABYLON.Scene(engine);
       scene.clearColor = BABYLON.Color4.FromHexString('#aeb9c7ff');
       scene.environmentIntensity = 0.7;
       const targetHeight = variant === 'cloud' ? 0.68 : 0.54;
-      const camera = new BABYLON.ArcRotateCamera('camera', Math.PI/2 + 0.42, 1.17, variant === 'cloud' ? 3.15 : 2.65, new BABYLON.Vector3(0.08,targetHeight,0), scene);
+      const alpha = view === 'side' ? 0 : view === 'back34' ? -Math.PI/2 - 0.42 : Math.PI/2 + 0.42;
+      const camera = new BABYLON.ArcRotateCamera('camera', alpha, 1.17, variant === 'cloud' ? 3.15 : 2.65, new BABYLON.Vector3(0.08,targetHeight,0), scene);
       camera.lowerRadiusLimit = 1.7; camera.upperRadiusLimit = 6; camera.attachControl(canvas,true);
       const hemi = new BABYLON.HemisphericLight('hemi',new BABYLON.Vector3(-0.3,1,0.4),scene); hemi.intensity=1.3; hemi.groundColor=new BABYLON.Color3(.25,.28,.33);
       const sun = new BABYLON.DirectionalLight('sun',new BABYLON.Vector3(-.6,-1,-.45),scene); sun.position=new BABYLON.Vector3(3,6,4); sun.intensity=1.4;
@@ -32,7 +34,7 @@
       const file = variant === 'cloud' ? 'gopher-scarf-cloud.glb' : 'gopher-scarf.glb';
       const result = await BABYLON.SceneLoader.ImportMeshAsync('', '../assets/', file, scene);
       result.meshes.forEach(m => { if (m.getTotalVertices && m.getTotalVertices()) shadows.addShadowCaster(m); });
-      document.getElementById('label').textContent = variant === 'cloud' ? 'Scarf gopher — cloud mode' : 'Scarf gopher — no cloud';
+      document.getElementById('label').textContent = `${variant === 'cloud' ? 'Scarf gopher — cloud mode' : 'Scarf gopher — no cloud'} · ${view}`;
       engine.runRenderLoop(()=>scene.render()); addEventListener('resize',()=>engine.resize());
     })().catch(error => document.getElementById('label').textContent = error.message);
   </script>
