@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gopher Grid</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="renderCanvas" tabindex="0"></canvas>
+
+  <div id="hud" aria-label="Controls">
+    <div class="hud-title">gopher</div>
+    <ul>
+      <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrows&nbsp; move</li>
+      <li><kbd>Shift</kbd>&nbsp; sprint</li>
+      <li><kbd>Space</kbd>&nbsp; jump</li>
+      <li>drag&nbsp; orbit &middot; wheel&nbsp; zoom</li>
+    </ul>
+    <div id="status" hidden></div>
+  </div>
+
+  <div id="loading">Loading&hellip;</div>
+
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
+  <script src="gopher-model.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
