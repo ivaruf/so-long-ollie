@@ -27,10 +27,36 @@ Requires Blender (tested with 5.2 LTS on macOS). The script runs headless.
 BLENDER=/path/to/blender ./build.sh
 ```
 
+## Reference-inspired variants
+
+Two additional Blender-authored GLBs reproduce the cream gopher, black body
+stripes, and windswept scarf from the supplied drawing. The cloud variant uses
+the same character and adds a solid, fully opaque cloud made from overlapping
+soft puffs.
+
+```sh
+./build-variants.sh              # GLBs, editable .blend files, and previews
+./build-variants.sh --no-render  # skip previews
+```
+
+| Asset | Contents |
+| --- | --- |
+| `assets/gopher-scarf.glb` | Grounded scarf gopher, feet at the origin |
+| `assets/gopher-scarf-cloud.glb` | Same gopher lifted onto an opaque white cloud |
+| `blender/gopher-scarf.blend` | Editable grounded source scene |
+| `blender/gopher-scarf-cloud.blend` | Editable cloud source scene |
+
+Both variants keep the generic model's `Gopher`, `Body`, `Head`, limb, tail,
+and eye node names. A cloud appearance/disappearance transition is intentionally
+not baked into either model: switching or cross-fading between two GLBs is game
+state, so it should be implemented in the runtime when that behavior is defined.
+
 ## Layout
 
 ```
 blender/gopher.py     Builds the gopher from primitives and exports assets/gopher.glb
+blender/gopher_scarf.py Builds the grounded/cloud scarf variants
+build-variants.sh     Rebuilds both scarf variants and their editable scenes
 assets/gopher.glb     The model (Y-up glTF, faces +Z, feet on y=0, 1 unit tall)
 assets/*.png          Eevee preview renders from four angles
 web/index.html        Page shell and HUD
