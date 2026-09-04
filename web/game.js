@@ -1,11 +1,16 @@
 /* =============================================================================
    Gopher Grid — game.js
    A cute gopher running around a bare-bones grid world. Vanilla JS + Babylon.js
-   from CDN, no build step. Works from file:// (model is embedded as base64 in
+   from CDN, no build step. Works from file:// (models are embedded as base64 in
    gopher-model.js, which may be missing — we fall back gracefully).
 
-   Sections: config · helpers · boot · world · gopher model · input · movement
-             & collision · procedural animation · main loop
+   Two forms share one pivot:
+     walk  – the scarf gopher on foot (jump, sprint)
+     fly   – the same gopher riding a cloud; entered with a double jump,
+             hold Space to rise, Shift to sink, touch the ground to land
+
+   Sections: config · helpers · boot · world · effects · characters · input ·
+             movement & collision · procedural animation · main loop
    ============================================================================= */
 'use strict';
 
@@ -14,26 +19,49 @@
   // Config
   // ---------------------------------------------------------------------------
 
-  /** Yaw correction (radians) for the loaded model, applied in ONE place
-   *  (the `gopherModelYaw` node between the pivot and the glTF `__root__`).
-   *  Model is authored to face +Z, so 0 is expected. */
+  /** Yaw correction (radians) for loaded models, applied in ONE place (the
+   *  `modelYaw` node between each character holder and the glTF `__root__`).
+   *  Models are authored to face +Z, so 0 is expected. */
   const MODEL_YAW_OFFSET = 0;
+
+  /** Model names (assets/<name>.glb / keys in window.GOPHER_MODELS), in order of
+   *  preference. The first one that loads wins. */
+  const WALK_MODELS = ['gopher-scarf', 'gopher'];
+  const FLY_MODELS = ['gopher-scarf-cloud'];
 
   const GROUND_SIZE = 40;
   const WORLD_HALF = 19.5;           // gopher clamped to ±WORLD_HALF on X/Z
   const GOPHER_RADIUS = 0.35;        // XZ collision circle
+
+  // On foot
   const WALK_SPEED = 4;              // units/s
   const SPRINT_MULT = 1.7;
   const ACCEL = 20;                  // units/s² toward target velocity
   const DECEL = 24;
-  const TURN_RATE = 12;              // 1/s exponential yaw smoothing
   const JUMP_SPEED = 6;              // apex ≈ 1 unit with GRAVITY = 18
   const GRAVITY = 18;
+
+  // On the cloud
+  const FLY_SPEED = 7;
+  const FLY_ACCEL = 12;
+  const FLY_DECEL = 9;
+  const ASCEND_SPEED = 4.5;
+  const DESCEND_SPEED = 5;
+  const VERTICAL_RATE = 6;           // 1/s smoothing toward the wanted vertical speed
+  const TAKEOFF_BOOST = 3;           // upward speed granted by the transformation
+  const MAX_ALTITUDE = 12;
+  const FALLBACK_CLOUD_LIFT = 0.28;  // rider height when the cloud is procedural
+
+  const TURN_RATE = 12;              // 1/s exponential yaw smoothing
   const MAX_DT = 0.05;
   const CAMERA_TARGET_HEIGHT = 0.6;
 
-  /** Node names inside the model (contract with the Blender side). */
-  const NODE_NAMES = ['Gopher', 'Body', 'Head', 'ArmL', 'ArmR', 'LegL', 'LegR', 'Tail', 'EyeL', 'EyeR'];
+  /** Node names inside the models (contract with the Blender side). Any of them
+   *  may be missing in a given model; animation simply skips those. */
+  const NODE_NAMES = [
+    'Gopher', 'Body', 'Head', 'ArmL', 'ArmR', 'LegL', 'LegR', 'Tail', 'EyeL', 'EyeR',
+    'Scarf', 'ScarfTailUpper', 'ScarfTailLower', 'Cloud',
+  ];
 
   /** Deterministic obstacle layout: centre x/z + size w/h/d. Origin stays clear. */
   const OBSTACLES = [
@@ -46,11 +74,13 @@
     { x: -13, z:  -4, w: 1.0, h: 1.0, d: 1.0 },
     { x:   3, z: -13, w: 1.4, h: 1.4, d: 1.4 },
     { x: -10, z:  13, w: 2.0, h: 2.0, d: 2.0 },
-    // low walls
+    // low walls (hoppable: jump apex is 1 unit)
     { x:   0, z:  10, w: 6.0, h: 0.8, d: 0.6 },
     { x: -12, z:   0, w: 0.6, h: 0.8, d: 6.0 },
     { x:  13, z:  -2, w: 0.6, h: 1.0, d: 5.0 },
     { x:   4, z:  -4, w: 4.0, h: 0.6, d: 0.6 },
+    // something tall to fly over
+    { x:  -3, z: -15, w: 2.0, h: 3.5, d: 2.0 },
   ];
 
   // ---------------------------------------------------------------------------
@@ -66,12 +96,17 @@
     return BABYLON.Scalar.Lerp(current, target, 1 - Math.exp(-rate * dt));
   }
 
-  /** Shortest-arc angle lerp in radians (Scalar.LerpAngle works in degrees). */
-  function lerpAngle(a, b, t) {
-    let d = (b - a) % TWO_PI;
+  /** Wrap an angle to (-π, π]. */
+  function wrapAngle(a) {
+    let d = a % TWO_PI;
     if (d > Math.PI) d -= TWO_PI;
     else if (d < -Math.PI) d += TWO_PI;
-    return a + d * t;
+    return d;
+  }
+
+  /** Shortest-arc angle lerp in radians (Scalar.LerpAngle works in degrees). */
+  function lerpAngle(a, b, t) {
+    return a + wrapAngle(b - a) * t;
   }
 
   function base64ToBytes(b64) {
@@ -88,12 +123,18 @@
   const ui = {
     loading: document.getElementById('loading'),
     status: document.getElementById('status'),
+    mode: document.getElementById('mode'),
   };
   const hideLoading = () => { if (ui.loading) ui.loading.hidden = true; };
   const setStatus = (text) => {
     if (!ui.status) return;
     ui.status.textContent = text || '';
     ui.status.hidden = !text;
+  };
+  const setModeBadge = (text, flying) => {
+    if (!ui.mode) return;
+    ui.mode.textContent = text;
+    ui.mode.classList.toggle('flying', flying);
   };
 
   const canvas = document.getElementById('renderCanvas');
@@ -121,9 +162,9 @@
   );
   camera.lockedTarget = cameraTarget;
   camera.lowerRadiusLimit = 3;
-  camera.upperRadiusLimit = 12;
+  camera.upperRadiusLimit = 14;
   camera.lowerBetaLimit = 0.3;
-  camera.upperBetaLimit = 1.45;
+  camera.upperBetaLimit = 1.5;
   camera.wheelDeltaPercentage = 0.02;
   camera.panningSensibility = 0;   // target is locked, no panning
   camera.minZ = 0.1;
@@ -145,8 +186,7 @@
   shadowGenerator.usePercentageCloserFiltering = true;
   shadowGenerator.filteringQuality = BABYLON.ShadowGenerator.QUALITY_MEDIUM;
   shadowGenerator.bias = 0.003;
-  shadowGenerator.normalBias = 0.05; // stops acne on faces lit at a grazing angle
-  shadowGenerator.normalBias = 0.02;
+  shadowGenerator.normalBias = 0.03; // stops acne on faces lit at a grazing angle
 
   // ---------------------------------------------------------------------------
   // World: grid ground + box obstacles
@@ -198,7 +238,7 @@
   ground.material = createGridMaterial();
   ground.receiveShadows = true;
 
-  /** AABBs on the XZ plane for collision. */
+  /** AABBs on the XZ plane for collision, with the box top height. */
   const obstacleBounds = [];
 
   function createObstacles() {
@@ -224,44 +264,173 @@
       obstacleBounds.push({
         minX: o.x - o.w / 2, maxX: o.x + o.w / 2,
         minZ: o.z - o.d / 2, maxZ: o.z + o.d / 2,
+        top: o.h,
       });
     });
   }
   createObstacles();
 
   // ---------------------------------------------------------------------------
-  // Gopher: pivot, model loading (embedded → ../assets → placeholder), rest pose
+  // Effects: a white "poof" for the transformation
   // ---------------------------------------------------------------------------
 
-  /** All movement / rotation is applied to this pivot; the model hangs below. */
+  const poof = (() => {
+    const COUNT = 14;
+    const LIFETIME = 0.55;
+    const mat = new BABYLON.StandardMaterial('poofMat', scene);
+    mat.diffuseColor = new BABYLON.Color3(1, 1, 1);
+    mat.emissiveColor = new BABYLON.Color3(0.55, 0.57, 0.62);
+    mat.specularColor = BABYLON.Color3.Black();
+
+    const puffs = [];
+    for (let i = 0; i < COUNT; i++) {
+      const mesh = BABYLON.MeshBuilder.CreateSphere('poof' + i, { diameter: 1, segments: 6 }, scene);
+      mesh.material = mat;
+      mesh.isPickable = false;
+      mesh.isVisible = false;
+      puffs.push({ mesh, vel: new BABYLON.Vector3(), life: 0, size: 0.3 });
+    }
+
+    /** `momentum` (optional) is added to every puff so the burst travels with
+     *  a moving gopher instead of being left behind. */
+    function burst(center, momentum) {
+      for (const p of puffs) {
+        const dir = new BABYLON.Vector3(randomRange(-1, 1), randomRange(-0.3, 1), randomRange(-1, 1)).normalize();
+        p.mesh.position.copyFrom(center).addInPlace(dir.scale(randomRange(0.05, 0.3)));
+        p.mesh.position.y += 0.35;
+        p.vel.copyFrom(dir).scaleInPlace(randomRange(1.5, 3.5));
+        if (momentum) p.vel.addInPlace(momentum);
+        p.size = randomRange(0.25, 0.5);
+        p.life = 1;
+        p.mesh.isVisible = true;
+      }
+    }
+
+    function update(dt) {
+      for (const p of puffs) {
+        if (p.life <= 0) continue;
+        p.life -= dt / LIFETIME;
+        if (p.life <= 0) { p.mesh.isVisible = false; continue; }
+        p.mesh.position.addInPlace(p.vel.scale(dt));
+        p.vel.scaleInPlace(Math.max(0, 1 - 4 * dt)); // drag
+        const s = p.size * (0.5 + 0.5 * p.life);
+        p.mesh.scaling.set(s, s, s);
+        p.mesh.visibility = Math.min(1, p.life * 1.5);
+      }
+    }
+
+    return { burst, update };
+  })();
+
+  // ---------------------------------------------------------------------------
+  // Characters: model loading (embedded → ../assets → fallbacks) and rest poses
+  // ---------------------------------------------------------------------------
+
+  /** All movement / yaw is applied to this pivot; the active character hangs below. */
   const gopher = new BABYLON.TransformNode('gopherPivot', scene);
 
-  /** NODE_NAME -> { node, pos, rot, scl } rest transforms captured after load. */
-  const parts = {};
+  /** Base64 models from gopher-model.js (generated), if present. */
+  const embeddedModels = (() => {
+    if (window.GOPHER_MODELS && typeof window.GOPHER_MODELS === 'object') return window.GOPHER_MODELS;
+    if (typeof window.GOPHER_GLB_B64 === 'string') return { gopher: window.GOPHER_GLB_B64 };
+    return {};
+  })();
 
-  /** Parent the glTF `__root__` under the pivot via a yaw-correction node. */
-  function attachLoadedModel(result, sourceLabel) {
-    const root = result.meshes.find((m) => m.name === '__root__') || result.meshes[0];
+  /** Try the embedded copy, then the sibling asset over http. Null if neither works. */
+  async function importModel(name) {
+    const b64 = embeddedModels[name];
+    if (typeof b64 === 'string' && b64.length > 0) {
+      try {
+        const file = new File([base64ToBytes(b64)], name + '.glb');
+        const result = await BABYLON.SceneLoader.ImportMeshAsync('', '', file, scene);
+        if (result.meshes.length) return { result, source: 'gopher-model.js (embedded)' };
+      } catch (err) {
+        console.warn(`[gopher] embedded ${name} failed to load:`, err);
+      }
+    }
+    try {
+      const result = await BABYLON.SceneLoader.ImportMeshAsync('', '../assets/', name + '.glb', scene);
+      if (result.meshes.length) return { result, source: '../assets/' + name + '.glb' };
+    } catch (err) {
+      console.warn(`[gopher] ../assets/${name}.glb failed to load:`, err);
+    }
+    return null;
+  }
 
-    // `__root__` carries a rotationQuaternion + (1,1,-1) scaling that convert
-    // glTF's right-handed space to Babylon's; we leave that untouched and put
-    // the yaw offset on its own Euler node so the fix stays in one place.
-    const modelYaw = new BABYLON.TransformNode('gopherModelYaw', scene);
-    modelYaw.parent = gopher;
+  async function importFirst(names) {
+    for (const name of names) {
+      const loaded = await importModel(name);
+      if (loaded) {
+        console.info(`[gopher] ${name} loaded from ${loaded.source} (${loaded.result.meshes.length} meshes)`);
+        return { name, ...loaded };
+      }
+    }
+    return null;
+  }
+
+  /** Look up the contract nodes under `root`, convert quaternion rotation to
+   *  Euler (the glTF loader sets rotationQuaternion, which makes `.rotation`
+   *  writes a no-op), then store rest transforms. Animation is rest + offset. */
+  function captureRestPose(root, label) {
+    const byName = new Map();
+    for (const node of root.getDescendants(false)) {
+      if (!byName.has(node.name)) byName.set(node.name, node);
+    }
+    const parts = {};
+    const found = [];
+    const missing = [];
+    NODE_NAMES.forEach((name) => {
+      const node = byName.get(name);
+      if (!node || !(node instanceof BABYLON.TransformNode)) {
+        parts[name] = null;
+        missing.push(name);
+        return;
+      }
+      if (node.rotationQuaternion) {
+        node.rotation = node.rotationQuaternion.toEulerAngles();
+        node.rotationQuaternion = null;
+      }
+      parts[name] = {
+        node,
+        pos: node.position.clone(),
+        rot: node.rotation.clone(),
+        scl: node.scaling.clone(),
+      };
+      found.push(name);
+    });
+    console.info(`[gopher] ${label}: nodes found: ${found.join(', ') || '(none)'}` +
+                 (missing.length ? ` | missing: ${missing.join(', ')}` : ''));
+    return parts;
+  }
+
+  /**
+   * Wrap a model root as a playable character:
+   *   pivot → holder (pitch/roll/bob) → modelYaw (MODEL_YAW_OFFSET) → root
+   * `__root__` from the glTF loader carries a rotationQuaternion + (1,1,-1)
+   * scaling for the handedness conversion, so we never touch its transform.
+   */
+  function makeCharacter(name, root, meshes, animationGroups) {
+    const holder = new BABYLON.TransformNode('holder:' + name, scene);
+    holder.parent = gopher;
+    const modelYaw = new BABYLON.TransformNode('modelYaw:' + name, scene);
+    modelYaw.parent = holder;
     modelYaw.rotation.y = MODEL_YAW_OFFSET;
     root.parent = modelYaw;
 
-    // We animate procedurally; make sure baked clips (if any) don't fight us.
-    (result.animationGroups || []).forEach((g) => g.stop());
-
-    result.meshes.forEach((m) => {
+    (animationGroups || []).forEach((g) => g.stop()); // procedural animation only
+    meshes.forEach((m) => {
       if (m.getTotalVertices && m.getTotalVertices() > 0) shadowGenerator.addShadowCaster(m, false);
     });
-    console.info(`[gopher] model loaded from ${sourceLabel} (${result.meshes.length} meshes)`);
+
+    return { name, holder, root, parts: captureRestPose(root, name), lift: 0 };
   }
 
-  /** Brown capsule + sphere head, with the contract's node names so the same
-   *  animation code drives it. Used only when no model can be loaded. */
+  function characterFromImport(loaded) {
+    const root = loaded.result.meshes.find((m) => m.name === '__root__') || loaded.result.meshes[0];
+    return makeCharacter(loaded.name, root, loaded.result.meshes, loaded.result.animationGroups);
+  }
+
+  /** Brown capsule + sphere head with the contract's node names. Last resort. */
   function buildPlaceholderGopher() {
     const fur = new BABYLON.StandardMaterial('placeholderFur', scene);
     fur.diffuseColor = new BABYLON.Color3(0.48, 0.32, 0.18);
@@ -271,14 +440,12 @@
     dark.specularColor = new BABYLON.Color3(0.4, 0.4, 0.4);
 
     const root = new BABYLON.TransformNode('Gopher', scene);
-    root.parent = gopher;
 
     const body = BABYLON.MeshBuilder.CreateCapsule('Body', { height: 0.62, radius: 0.22 }, scene);
     body.position.y = 0.42;
     body.material = fur;
     body.parent = root;
 
-    // Head pivot at the neck, sphere above it, eyes + nose on the front (+Z).
     const head = new BABYLON.TransformNode('Head', scene);
     head.position.y = 0.68;
     head.parent = root;
@@ -297,7 +464,6 @@
     nose.material = dark;
     nose.parent = head;
 
-    // Limbs: pivot node at the joint, capsule hanging down from it.
     const limb = (name, x, y, z, length, radius) => {
       const joint = new BABYLON.TransformNode(name, scene);
       joint.position.set(x, y, z);
@@ -320,65 +486,68 @@
     tailMesh.material = fur;
     tailMesh.parent = tail;
 
-    root.getChildMeshes().forEach((m) => shadowGenerator.addShadowCaster(m, false));
+    return makeCharacter('placeholder', root, root.getChildMeshes(), []);
   }
 
-  async function loadGopherModel() {
-    // 1) Embedded base64 GLB from gopher-model.js (works from file://).
-    if (typeof window.GOPHER_GLB_B64 === 'string' && window.GOPHER_GLB_B64.length > 0) {
-      try {
-        const bytes = base64ToBytes(window.GOPHER_GLB_B64);
-        const file = new File([bytes], 'gopher.glb');
-        const result = await BABYLON.SceneLoader.ImportMeshAsync('', '', file, scene);
-        if (result.meshes.length) return attachLoadedModel(result, 'gopher-model.js (embedded)');
-      } catch (err) {
-        console.warn('[gopher] embedded model failed to load:', err);
-      }
+  /** Procedural cloud (a fat ellipsoid plus puffs), bottom at y = 0. Used when
+   *  the cloud-riding model is unavailable: the walking character sits on it. */
+  function buildProceduralCloud() {
+    const mat = new BABYLON.StandardMaterial('cloudMat', scene);
+    mat.diffuseColor = new BABYLON.Color3(1, 1, 1);
+    mat.emissiveColor = new BABYLON.Color3(0.25, 0.26, 0.3);
+    mat.specularColor = new BABYLON.Color3(0.05, 0.05, 0.05);
+
+    const cloud = new BABYLON.TransformNode('Cloud', scene);
+    cloud.parent = gopher;
+    const base = BABYLON.MeshBuilder.CreateSphere('CloudBase', { diameter: 1, segments: 12 }, scene);
+    base.scaling.set(0.95, 0.3, 0.6);
+    base.position.y = 0.15;
+    base.material = mat;
+    base.parent = cloud;
+    shadowGenerator.addShadowCaster(base, false);
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * TWO_PI;
+      const puff = BABYLON.MeshBuilder.CreateSphere('CloudPuff' + i, { diameter: randomRange(0.25, 0.4), segments: 8 }, scene);
+      puff.position.set(Math.cos(a) * 0.38, 0.14 + randomRange(0, 0.06), Math.sin(a) * 0.22);
+      puff.material = mat;
+      puff.parent = cloud;
+      shadowGenerator.addShadowCaster(puff, false);
+    }
+    return cloud;
+  }
+
+  /** The two forms; `active` is whichever is currently shown. */
+  const characters = { walk: null, fly: null };
+  let fallbackCloud = null;   // only when fly reuses the walk character
+  let active = null;
+
+  function setActiveCharacter(which) {
+    const next = characters[which];
+    for (const c of new Set([characters.walk, characters.fly])) {
+      if (c) c.holder.setEnabled(c === next);
+    }
+    if (fallbackCloud) fallbackCloud.setEnabled(which === 'fly');
+    next.lift = (which === 'fly' && fallbackCloud) ? FALLBACK_CLOUD_LIFT : 0;
+    // Reset any pose left over from the other mode.
+    next.holder.rotation.set(0, 0, 0);
+    next.holder.position.set(0, next.lift, 0);
+    active = next;
+  }
+
+  async function loadCharacters() {
+    const walk = await importFirst(WALK_MODELS);
+    characters.walk = walk ? characterFromImport(walk) : buildPlaceholderGopher();
+    if (!walk) setStatus('model missing – placeholder gopher');
+
+    const fly = await importFirst(FLY_MODELS);
+    if (fly) {
+      characters.fly = characterFromImport(fly);
     } else {
-      console.info('[gopher] window.GOPHER_GLB_B64 is not defined (gopher-model.js missing?)');
+      console.warn('[gopher] no cloud model – using the walking gopher on a procedural cloud');
+      characters.fly = characters.walk;
+      fallbackCloud = buildProceduralCloud();
     }
-
-    // 2) Sibling asset over http.
-    try {
-      const result = await BABYLON.SceneLoader.ImportMeshAsync('', '../assets/', 'gopher.glb', scene);
-      if (result.meshes.length) return attachLoadedModel(result, '../assets/gopher.glb');
-    } catch (err) {
-      console.warn('[gopher] ../assets/gopher.glb failed to load:', err);
-    }
-
-    // 3) Placeholder so the game is always playable.
-    console.warn('[gopher] no model available – using placeholder gopher');
-    buildPlaceholderGopher();
-    setStatus('model missing – placeholder gopher');
-  }
-
-  /** Look up the contract nodes, convert quaternion rotation to Euler (the glTF
-   *  loader sets rotationQuaternion, which makes `.rotation` writes a no-op),
-   *  then store rest transforms. Animation is always rest + offset. */
-  function captureRestPose() {
-    const found = [];
-    const missing = [];
-    NODE_NAMES.forEach((name) => {
-      const node = scene.getNodeByName(name);
-      if (!node || !(node instanceof BABYLON.TransformNode)) {
-        parts[name] = null;
-        missing.push(name);
-        return;
-      }
-      if (node.rotationQuaternion) {
-        node.rotation = node.rotationQuaternion.toEulerAngles();
-        node.rotationQuaternion = null;
-      }
-      parts[name] = {
-        node,
-        pos: node.position.clone(),
-        rot: node.rotation.clone(),
-        scl: node.scaling.clone(),
-      };
-      found.push(name);
-    });
-    console.info(`[gopher] nodes found: ${found.join(', ') || '(none)'}` +
-                 (missing.length ? ` | missing: ${missing.join(', ')}` : ''));
+    setActiveCharacter('walk');
   }
 
   // ---------------------------------------------------------------------------
@@ -403,7 +572,15 @@
   // Movement & collision
   // ---------------------------------------------------------------------------
 
-  const state = { vx: 0, vz: 0, vy: 0, grounded: true, yaw: 0, speed01: 0 };
+  const state = {
+    mode: 'walk',        // 'walk' | 'fly'
+    vx: 0, vz: 0, vy: 0,
+    grounded: true,
+    yaw: 0,
+    yawRate: 0,          // smoothed rad/s, drives banking
+    speed01: 0,          // horizontal speed / walk speed (0..1.7 on foot, 0..1 flying)
+    vertical01: 0,       // flying: -1 sinking .. +1 rising
+  };
 
   /** Camera forward projected on XZ, derived from the orbit angle. */
   function cameraForwardXZ() {
@@ -424,11 +601,32 @@
     state.vz += (dz / d) * maxDelta;
   }
 
-  /** Circle-vs-AABB push-out on XZ, then clamp to the world. Also removes the
-   *  velocity component pointing into whatever we hit so we slide along it. */
+  /** WASD/arrows → target horizontal velocity relative to the camera yaw. */
+  function steerHorizontal(dt, maxSpeed, accel, decel) {
+    const ix = (isDown('KeyD') || isDown('ArrowRight') ? 1 : 0) - (isDown('KeyA') || isDown('ArrowLeft') ? 1 : 0);
+    const iz = (isDown('KeyW') || isDown('ArrowUp') ? 1 : 0) - (isDown('KeyS') || isDown('ArrowDown') ? 1 : 0);
+
+    const fwd = cameraForwardXZ();
+    const dirX = fwd.x * iz + fwd.z * ix;  // right = (fwd.z, -fwd.x)
+    const dirZ = fwd.z * iz - fwd.x * ix;
+    const len = Math.hypot(dirX, dirZ);
+    const hasInput = len > 1e-6;
+
+    const tx = hasInput ? (dirX / len) * maxSpeed : 0;
+    const tz = hasInput ? (dirZ / len) * maxSpeed : 0;
+    accelerateToward(tx, tz, (hasInput ? accel : decel) * dt);
+
+    const pos = gopher.position;
+    pos.x += state.vx * dt;
+    pos.z += state.vz * dt;
+  }
+
+  /** Circle-vs-AABB push-out on XZ for boxes we are not above, then clamp to the
+   *  world. Also removes the velocity component pointing into whatever we hit. */
   function resolveCollisions(pos) {
     const r = GOPHER_RADIUS;
     for (const b of obstacleBounds) {
+      if (pos.y >= b.top) continue; // above it: fly (or hop) over
       const cx = clamp(pos.x, b.minX, b.maxX);
       const cz = clamp(pos.z, b.minZ, b.maxZ);
       const dx = pos.x - cx;
@@ -473,36 +671,67 @@
     }
   }
 
-  function updateMovement(dt) {
-    // Input → world direction relative to the camera yaw (W = away from camera).
-    const ix = (isDown('KeyD') || isDown('ArrowRight') ? 1 : 0) - (isDown('KeyA') || isDown('ArrowLeft') ? 1 : 0);
-    const iz = (isDown('KeyW') || isDown('ArrowUp') ? 1 : 0) - (isDown('KeyS') || isDown('ArrowDown') ? 1 : 0);
+  /** Turn toward the direction of travel (local +Z forward); track the yaw rate. */
+  function faceTravelDirection(dt, minSpeed) {
+    const hSpeed = Math.hypot(state.vx, state.vz);
+    const prevYaw = state.yaw;
+    if (hSpeed > minSpeed) {
+      const targetYaw = Math.atan2(state.vx, state.vz);
+      state.yaw = lerpAngle(state.yaw, targetYaw, 1 - Math.exp(-TURN_RATE * dt));
+    }
+    state.yawRate = damp(state.yawRate, wrapAngle(state.yaw - prevYaw) / dt, 10, dt);
+    gopher.rotation.y = state.yaw;
+    return hSpeed;
+  }
+
+  // ---- Mode transitions -----------------------------------------------------
+
+  function enterFlight() {
+    state.mode = 'fly';
+    state.grounded = false;
+    state.vy = Math.max(state.vy, TAKEOFF_BOOST);
+    setActiveCharacter('fly');
+    poof.burst(gopher.position, new BABYLON.Vector3(state.vx, state.vy * 0.5, state.vz));
+    triggerSquash();
+    setModeBadge('on a cloud', true);
+    setStatus('hold Space to rise · Shift to sink · touch the ground to land');
+  }
+
+  function land() {
+    state.mode = 'walk';
+    state.grounded = true;
+    state.vy = 0;
+    state.vertical01 = 0;
+    gopher.position.y = 0;
+    setActiveCharacter('walk');
+    poof.burst(gopher.position, new BABYLON.Vector3(state.vx, 0, state.vz));
+    triggerSquash();
+    setModeBadge('on foot', false);
+    setStatus('');
+  }
+
+  // ---- Per-mode updates -----------------------------------------------------
+
+  function updateWalk(dt) {
     const sprint = isDown('ShiftLeft') || isDown('ShiftRight');
-
-    const fwd = cameraForwardXZ();
-    const dirX = fwd.x * iz + fwd.z * ix;  // right = (fwd.z, -fwd.x)
-    const dirZ = fwd.z * iz - fwd.x * ix;
-    const len = Math.hypot(dirX, dirZ);
-    const hasInput = len > 1e-6;
-
-    const maxSpeed = WALK_SPEED * (sprint ? SPRINT_MULT : 1);
-    const tx = hasInput ? (dirX / len) * maxSpeed : 0;
-    const tz = hasInput ? (dirZ / len) * maxSpeed : 0;
-    accelerateToward(tx, tz, (hasInput ? ACCEL : DECEL) * dt);
-
-    // Horizontal integration + collision.
+    steerHorizontal(dt, WALK_SPEED * (sprint ? SPRINT_MULT : 1), ACCEL, DECEL);
     const pos = gopher.position;
-    pos.x += state.vx * dt;
-    pos.z += state.vz * dt;
     resolveCollisions(pos);
 
-    // Jump / gravity / landing at y = 0.
-    if (state.grounded && input.jumpRequested) {
-      state.vy = JUMP_SPEED;
-      state.grounded = false;
-      triggerSquash();
+    // Space: jump from the ground, or transform on a second press in the air.
+    if (input.jumpRequested) {
+      if (state.grounded) {
+        state.vy = JUMP_SPEED;
+        state.grounded = false;
+        triggerSquash();
+      } else {
+        input.jumpRequested = false;
+        enterFlight();
+        return;
+      }
     }
     input.jumpRequested = false;
+
     if (!state.grounded) {
       state.vy -= GRAVITY * dt;
       pos.y += state.vy * dt;
@@ -514,14 +743,31 @@
       }
     }
 
-    // Face the direction of travel (local +Z forward).
-    const hSpeed = Math.hypot(state.vx, state.vz);
-    if (hSpeed > 0.3) {
-      const targetYaw = Math.atan2(state.vx, state.vz);
-      state.yaw = lerpAngle(state.yaw, targetYaw, 1 - Math.exp(-TURN_RATE * dt));
-      gopher.rotation.y = state.yaw;
-    }
+    const hSpeed = faceTravelDirection(dt, 0.3);
     state.speed01 = clamp(hSpeed / WALK_SPEED, 0, 1.7);
+  }
+
+  function updateFly(dt) {
+    input.jumpRequested = false; // Space is "rise" while flying
+    steerHorizontal(dt, FLY_SPEED, FLY_ACCEL, FLY_DECEL);
+    const pos = gopher.position;
+
+    const up = isDown('Space');
+    const down = isDown('ShiftLeft') || isDown('ShiftRight');
+    const wantVy = up && !down ? ASCEND_SPEED : down && !up ? -DESCEND_SPEED : 0;
+    state.vy = damp(state.vy, wantVy, VERTICAL_RATE, dt);
+    pos.y += state.vy * dt;
+    if (pos.y > MAX_ALTITUDE) {
+      pos.y = MAX_ALTITUDE;
+      state.vy = Math.min(state.vy, 0);
+    }
+
+    resolveCollisions(pos);
+    const hSpeed = faceTravelDirection(dt, 0.3);
+    state.speed01 = clamp(hSpeed / FLY_SPEED, 0, 1);
+    state.vertical01 = clamp(state.vy / ASCEND_SPEED, -1, 1);
+
+    if (pos.y <= 0) land();
   }
 
   function updateCamera(dt) {
@@ -539,7 +785,9 @@
     phase: 0,                          // run-cycle phase
     run: 0,                            // blended run weight (0..1.7)
     air: 0,                            // blended airborne weight (0..1)
-    squash: 0,                         // 1 → 0 after takeoff / landing
+    fly: 0,                            // blended flying weight (0..1)
+    squash: 0,                         // 1 → 0 after takeoff / landing / transform
+    pitch: 0, roll: 0,                 // smoothed holder tilt while flying
     blinkTimer: randomRange(2.5, 5),
     blinkLeft: 0,
   };
@@ -557,14 +805,31 @@
     if (part) part.node.scaling.set(part.scl.x * sx, part.scl.y * sy, part.scl.z * sz);
   }
 
-  /**
-   * @param {number} t        total time (s)
-   * @param {number} dt       frame delta (s)
-   * @param {number} speed01  current speed / walk speed, 0..1.7
-   * @param {boolean} grounded
-   */
-  function animateGopher(t, dt, speed01, grounded) {
-    // Blend weights are lerped, never switched.
+  /** Shared by both forms: blink, scarf flutter, tail. */
+  function animateCommon(P, t, dt, flutter) {
+    // Blink: every 2.5–5 s, eyes squash to 10% height for ~120 ms.
+    anim.blinkTimer -= dt;
+    if (anim.blinkTimer <= 0) {
+      anim.blinkLeft = 0.12;
+      anim.blinkTimer = randomRange(2.5, 5);
+    }
+    let eyeY = 1;
+    if (anim.blinkLeft > 0) {
+      anim.blinkLeft -= dt;
+      eyeY = 0.1;
+    }
+    setScaling(P.EyeL, 1, eyeY, 1);
+    setScaling(P.EyeR, 1, eyeY, 1);
+
+    // Scarf tails flap harder the faster we go (they stream out sideways).
+    const f1 = Math.sin(t * 9 + 0.3) * (0.06 + 0.22 * flutter);
+    const f2 = Math.sin(t * 11 + 1.7) * (0.08 + 0.28 * flutter);
+    setRotation(P.ScarfTailUpper, 0, Math.cos(t * 6.5) * 0.12 * flutter, f1);
+    setRotation(P.ScarfTailLower, 0, Math.cos(t * 7.3 + 0.9) * 0.16 * flutter, f2);
+  }
+
+  /** On foot: run cycle, idle breathing, jump tuck. */
+  function animateWalk(P, t, dt, speed01, grounded) {
     anim.run = damp(anim.run, speed01, 10, dt);
     anim.air = damp(anim.air, grounded ? 0 : 1, 14, dt);
     const run = anim.run;
@@ -579,41 +844,87 @@
     const legSwing = s * 0.9 * run * onGround;
     const armSwing = s * 0.6 * run;
     const tuck = -0.9 * anim.air;
-    setRotation(parts.LegL,  legSwing + tuck, 0, 0);
-    setRotation(parts.LegR, -legSwing + tuck, 0, 0);
-    setRotation(parts.ArmL, -armSwing, 0, 0);
-    setRotation(parts.ArmR,  armSwing, 0, 0);
+    setRotation(P.LegL,  legSwing + tuck, 0, 0);
+    setRotation(P.LegR, -legSwing + tuck, 0, 0);
+    setRotation(P.ArmL, -armSwing, 0, 0);
+    setRotation(P.ArmR,  armSwing, 0, 0);
 
     // Body: bob while running, breathe while idle.
     const breath = Math.sin(t * TWO_PI * 1.5) * 0.015 * idle;
-    setPosition(parts.Body, 0, Math.abs(s) * 0.06 * run, 0);
-    setScaling(parts.Body, 1 - breath, 1 + breath, 1);
+    setPosition(P.Body, 0, Math.abs(s) * 0.06 * run, 0);
+    setScaling(P.Body, 1 - breath, 1 + breath, 1);
 
     // Head: forward lean + pitch bob while running, gentle sway while idle.
     const headPitch = 0.12 * run + s2 * 0.05 * run + Math.sin(t * 0.9) * 0.03 * idle;
     const headYaw = Math.sin(t * 0.5) * 0.06 * idle;
     const headRoll = Math.sin(t * 0.7) * 0.05 * idle;
-    setRotation(parts.Head, headPitch, headYaw, headRoll);
+    setRotation(P.Head, headPitch, headYaw, headRoll);
 
     // Tail: double-frequency sway while running, slow wag while idle.
-    const tailYaw = s2 * 0.35 * run + Math.sin(t * 2.2) * 0.25 * idle;
-    setRotation(parts.Tail, 0, tailYaw, 0);
+    setRotation(P.Tail, 0, s2 * 0.35 * run + Math.sin(t * 2.2) * 0.25 * idle, 0);
 
-    // Blink: every 2.5–5 s, eyes squash to 10% height for ~120 ms.
-    anim.blinkTimer -= dt;
-    if (anim.blinkTimer <= 0) {
-      anim.blinkLeft = 0.12;
-      anim.blinkTimer = randomRange(2.5, 5);
-    }
-    let eyeY = 1;
-    if (anim.blinkLeft > 0) {
-      anim.blinkLeft -= dt;
-      eyeY = 0.1;
-    }
-    setScaling(parts.EyeL, 1, eyeY, 1);
-    setScaling(parts.EyeR, 1, eyeY, 1);
+    animateCommon(P, t, dt, Math.min(run, 1) * 0.6);
 
-    // Jump squash on the pivot: a short 0→1→0 pulse (y 0.85 / xz 1.1 at peak).
+    // Holder: level, at rest height.
+    active.holder.rotation.set(0, 0, 0);
+    active.holder.position.set(0, active.lift, 0);
+  }
+
+  /** On the cloud: hover bob, lean into speed, bank into turns, tucked legs,
+   *  flapping arms while rising, pulsing cloud. */
+  function animateFly(P, t, dt, speed01, vertical01) {
+    anim.run = damp(anim.run, 0, 10, dt);
+    anim.air = damp(anim.air, 0, 14, dt);
+    const rise = Math.max(0, vertical01);
+    const sink = Math.max(0, -vertical01);
+
+    // Whole rider+cloud: bob, pitch and roll on the holder.
+    const bob = Math.sin(t * 2.4) * 0.05 + Math.sin(t * 3.7) * 0.02;
+    const wantPitch = 0.22 * speed01 - 0.18 * vertical01;       // +x pitches the nose down
+    const wantRoll = clamp(-state.yawRate * 0.22, -0.4, 0.4);   // dip the inside of the turn
+    anim.pitch = damp(anim.pitch, wantPitch, 6, dt);
+    anim.roll = damp(anim.roll, wantRoll, 6, dt);
+    active.holder.rotation.set(anim.pitch, 0, anim.roll);
+    active.holder.position.set(0, active.lift + bob, 0);
+
+    // Rider: sit with legs tucked, arms out; flap a little while rising.
+    const flap = Math.sin(t * 13) * 0.35 * rise;
+    setRotation(P.LegL, -1.2, 0, 0);
+    setRotation(P.LegR, -1.2, 0, 0);
+    setRotation(P.ArmL, -0.5 - 0.3 * speed01, 0, -0.55 - flap);
+    setRotation(P.ArmR, -0.5 - 0.3 * speed01, 0,  0.55 + flap);
+
+    const breath = Math.sin(t * TWO_PI * 1.2) * 0.012;
+    setPosition(P.Body, 0, 0, 0);
+    setScaling(P.Body, 1 - breath, 1 + breath, 1);
+
+    // Head: look up when rising, down when sinking, gentle curiosity otherwise.
+    const headPitch = -0.28 * rise + 0.22 * sink + Math.sin(t * 1.1) * 0.03;
+    setRotation(P.Head, headPitch, Math.sin(t * 0.6) * 0.08 * (1 - speed01), 0);
+
+    // Tail: happy wag, quicker with speed.
+    setRotation(P.Tail, 0, Math.sin(t * (3 + 4 * speed01)) * 0.35, 0);
+
+    // Cloud: soft pulse.
+    const pulse = 1 + Math.sin(t * 3.1) * 0.03;
+    setScaling(P.Cloud, pulse, 1 / pulse, pulse);
+    if (fallbackCloud) {
+      fallbackCloud.scaling.set(pulse, 1 / pulse, pulse);
+      fallbackCloud.position.y = bob;
+      fallbackCloud.rotation.set(anim.pitch, state.yaw, anim.roll);
+    }
+
+    animateCommon(P, t, dt, 0.4 + 0.6 * speed01);
+  }
+
+  function animateGopher(t, dt) {
+    if (!active) return;
+    const P = active.parts;
+
+    if (state.mode === 'fly') animateFly(P, t, dt, state.speed01, state.vertical01);
+    else animateWalk(P, t, dt, state.speed01, state.grounded);
+
+    // Squash/stretch pulse on the pivot: 0→1→0 (y 0.85 / xz 1.1 at peak).
     anim.squash = Math.max(0, anim.squash - dt / 0.18);
     const k = Math.sin(anim.squash * Math.PI);
     gopher.scaling.set(1 + 0.1 * k, 1 - 0.15 * k, 1 + 0.1 * k);
@@ -629,23 +940,30 @@
     const dt = Math.min(engine.getDeltaTime() / 1000, MAX_DT);
     if (dt <= 0) return;
     time += dt;
-    updateMovement(dt);
+    if (state.mode === 'fly') updateFly(dt);
+    else updateWalk(dt);
     updateCamera(dt);
-    animateGopher(time, dt, state.speed01, state.grounded);
+    animateGopher(time, dt);
+    poof.update(dt);
   });
 
   engine.runRenderLoop(() => scene.render());
   window.addEventListener('resize', () => engine.resize());
 
-  loadGopherModel()
+  loadCharacters()
     .catch((err) => {
       // Belt and braces: never leave the world empty.
       console.error('[gopher] unexpected load error:', err);
-      if (!scene.getNodeByName('Gopher')) buildPlaceholderGopher();
+      if (!characters.walk) characters.walk = buildPlaceholderGopher();
+      if (!characters.fly) {
+        characters.fly = characters.walk;
+        if (!fallbackCloud) fallbackCloud = buildProceduralCloud();
+      }
+      setActiveCharacter('walk');
       setStatus('model failed – placeholder gopher');
     })
     .then(() => {
-      captureRestPose();
+      setModeBadge('on foot', false);
       hideLoading();
     });
 })();

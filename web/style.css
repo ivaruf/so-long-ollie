@@ -84,3 +84,31 @@ html, body {
   pointer-events: none;
   user-select: none;
 }
+
+/* ---- Mode badge next to the title ---- */
+.mode {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: #cfd6e0;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  vertical-align: middle;
+}
+
+.mode.flying {
+  color: #1e232b;
+  background: #e8f1ff;
+}
+
+.hud-sub {
+  opacity: 0.75;
+}
+
+#hud em {
+  font-style: normal;
+  color: #ffcf7a;
+}

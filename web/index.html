@@ -10,11 +10,12 @@
   <canvas id="renderCanvas" tabindex="0"></canvas>
 
   <div id="hud" aria-label="Controls">
-    <div class="hud-title">gopher</div>
+    <div class="hud-title">gopher <span id="mode" class="mode">loading</span></div>
     <ul>
       <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / arrows&nbsp; move</li>
+      <li><kbd>Space</kbd>&nbsp; jump &middot; again in the air&nbsp; <em>cloud!</em></li>
       <li><kbd>Shift</kbd>&nbsp; sprint</li>
-      <li><kbd>Space</kbd>&nbsp; jump</li>
+      <li class="hud-sub">on the cloud: hold <kbd>Space</kbd> rise &middot; <kbd>Shift</kbd> sink &middot; touch down to land</li>
       <li>drag&nbsp; orbit &middot; wheel&nbsp; zoom</li>
     </ul>
     <div id="status" hidden></div>
