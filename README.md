@@ -5,7 +5,7 @@ jumps. Up in the clouds hangs a giant banner with a farewell message. The
 gophers are modelled procedurally in Blender and the game is plain
 HTML/CSS/JS on top of Babylon.js.
 
-![gopher](assets/gopher-preview-front34.png)
+![the banner in the clouds](assets/screenshot-banner.png)
 
 ## Play
 
@@ -40,6 +40,23 @@ The banner text lives at the top of `world.js` in `BANNER_LINES`; the "<3" is
 drawn as a red heart after the second line. `BANNER` sets where it floats
 (8 units up, 10 units ahead of the spawn) and how big it is. It is readable
 from both sides and ripples gently.
+
+## Host it on GitHub Pages
+
+Everything the browser needs is in `web/` (Babylon.js comes from a pinned CDN
+URL, the models are inlined), so hosting is a static deploy.
+
+1. Push the repository to GitHub with `main` as the default branch.
+2. In the repository go to **Settings → Pages → Build and deployment** and set
+   **Source** to **GitHub Actions**.
+3. The workflow in `.github/workflows/pages.yml` runs on every push to `main`
+   and publishes the `web/` folder. The game then lives at
+   `https://<user>.github.io/<repo>/`.
+
+If you prefer the classic "Deploy from a branch" mode instead, pick `main` and
+the `/ (root)` folder: the root `index.html` redirects to `web/`, and
+`web/.nojekyll` keeps Jekyll from touching the files. Either way the page is
+about 1.2 MB in total, dominated by the inlined models.
 
 ## Rebuild the model
 
