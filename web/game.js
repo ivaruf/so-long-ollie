@@ -357,7 +357,26 @@
       if (m.getTotalVertices && m.getTotalVertices() > 0) shadowGenerator.addShadowCaster(m, false);
     });
 
-    return { name, holder, root, parts: captureRestPose(root, name), lift: 0 };
+    const parts = captureRestPose(root, name);
+    for (const key of ['ScarfTailUpper', 'ScarfTailLower']) {
+      const part = parts[key];
+      const mesh = part && part.node;
+      if (!mesh || !mesh.getVerticesData) continue;
+      const positions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind);
+      if (!positions) continue;
+      // Keep the authored ribbon, knot attachment, thickness and material.
+      mesh.makeGeometryUnique();
+      part.cloth = {
+        rest: Float32Array.from(positions),
+        positions: Float32Array.from(positions),
+        normals: new Float32Array(positions.length),
+        indices: mesh.getIndices(),
+        length: Math.max(...positions.filter((_, i) => i % 3 === 0)),
+      };
+      mesh.setVerticesData(BABYLON.VertexBuffer.PositionKind, part.cloth.positions, true);
+      mesh.setVerticesData(BABYLON.VertexBuffer.NormalKind, part.cloth.normals, true);
+    }
+    return { name, holder, root, parts, lift: 0 };
   }
 
   function characterFromImport(loaded) {
@@ -861,7 +880,7 @@
   }
 
   /** Shared by both forms: blink, scarf flutter, tail. */
-  function animateCommon(P, t, dt, flutter) {
+  function animateCommon(P, t, dt) {
     // Blink: every 2.5–5 s, eyes squash to 10% height for ~120 ms.
     anim.blinkTimer -= dt;
     if (anim.blinkTimer <= 0) {
@@ -876,11 +895,7 @@
     setScaling(P.EyeL, 1, eyeY, 1);
     setScaling(P.EyeR, 1, eyeY, 1);
 
-    // Scarf tails flap harder the faster we go (they stream out sideways).
-    const f1 = Math.sin(t * 9 + 0.3) * (0.06 + 0.22 * flutter);
-    const f2 = Math.sin(t * 11 + 1.7) * (0.08 + 0.28 * flutter);
-    setRotation(P.ScarfTailUpper, 0, Math.cos(t * 6.5) * 0.12 * flutter, f1);
-    setRotation(P.ScarfTailLower, 0, Math.cos(t * 7.3 + 0.9) * 0.16 * flutter, f2);
+
   }
 
   /** On foot: run cycle, idle breathing, jump tuck. */
@@ -918,7 +933,7 @@
     // Tail: double-frequency sway while running, slow wag while idle.
     setRotation(P.Tail, 0, s2 * 0.35 * run + Math.sin(t * 2.2) * 0.25 * idle, 0);
 
-    animateCommon(P, t, dt, Math.min(run, 1) * 0.6);
+    animateCommon(P, t, dt);
 
     // Holder: level, at rest height.
     active.holder.rotation.set(0, 0, 0);
@@ -969,7 +984,50 @@
       fallbackCloud.rotation.set(anim.pitch, state.yaw, anim.roll);
     }
 
-    animateCommon(P, t, dt, 0.4 + 0.6 * speed01);
+    animateCommon(P, t, dt);
+  }
+
+  // World-space airflow lags acceleration and turns, and survives form changes.
+  const scarfMotion = { wind: BABYLON.Vector3.Zero(), phase: 0, speed: 0 };
+  function animateScarf(P, dt) {
+    const wind = scarfMotion.wind;
+    wind.x = damp(wind.x, -state.vx, 5, dt);
+    wind.y = damp(wind.y, -state.vy, 5, dt);
+    wind.z = damp(wind.z, -state.vz, 5, dt);
+    scarfMotion.speed = damp(scarfMotion.speed,
+      Math.hypot(state.vx, state.vy, state.vz), 5, dt);
+    const tempo = Math.min(scarfMotion.speed / FLY_SPEED, 1.5);
+    // Integrate frequency so changing speed never jumps the wave phase.
+    scarfMotion.phase = (scarfMotion.phase + dt * (2.5 + 12 * tempo)) % TWO_PI;
+    ['ScarfTailUpper', 'ScarfTailLower'].forEach((key, tail) => {
+      const part = P[key];
+      if (!part || !part.cloth) return;
+      const mesh = part.node;
+      const cloth = part.cloth;
+      // Includes glTF handedness, rider banking and the player's current heading.
+      const local = BABYLON.Vector3.TransformNormal(wind,
+        BABYLON.Matrix.Invert(mesh.computeWorldMatrix(true)));
+      const horizontal = Math.hypot(local.x, local.z);
+      const pull = 1 - Math.exp(-horizontal / 1.8);
+      const angle = Math.atan2(local.z, local.x) * pull;
+      const lift = clamp(local.y * 0.055, -0.35, 0.35);
+      for (let i = 0; i < cloth.rest.length; i += 3) {
+        const x = cloth.rest[i];
+        const u = clamp(x / cloth.length, 0, 1);
+        // The short section next to the knot points outward to clear the body.
+        const bend = angle * (1 - Math.exp(-u * 7));
+        const wave = Math.sin(scarfMotion.phase - u * 5 + tail * 1.8);
+        const ripple = wave * (0.008 + 0.045 * tempo) * u * u;
+        cloth.positions[i] = x * (0.22 + 0.78 * Math.cos(bend));
+        cloth.positions[i + 1] = cloth.rest[i + 1]
+          + x * (-0.7 * (1 - pull) + lift) * u + ripple;
+        cloth.positions[i + 2] = cloth.rest[i + 2]
+          + x * 0.78 * Math.sin(bend) + ripple * 0.35;
+      }
+      BABYLON.VertexData.ComputeNormals(cloth.positions, cloth.indices, cloth.normals);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.PositionKind, cloth.positions, true);
+      mesh.updateVerticesData(BABYLON.VertexBuffer.NormalKind, cloth.normals);
+    });
   }
 
   function animateGopher(t, dt) {
@@ -978,6 +1036,8 @@
 
     if (state.mode === 'fly') animateFly(P, t, dt, state.speed01, state.vertical01);
     else animateWalk(P, t, dt, state.speed01, state.grounded);
+
+    animateScarf(P, dt);
 
     // Squash/stretch pulse on the pivot: 0→1→0 (y 0.85 / xz 1.1 at peak).
     anim.squash = Math.max(0, anim.squash - dt / 0.18);
